@@ -267,7 +267,7 @@
  * 2. Wassermangel:
  *    - Erkennung: Wassersensor = HIGH (Kontakt offen)
  *    - Reaktion: waterLevelLow = true, Vernebler gesperrt
- *    - Display: "⚠ WASSER LEER!" blinkt (1 Hz, rot auf gelb)
+ *    - Display: "WASSER LEER!" blinkt (1 Hz, rot auf gelb)
  *    - Vernebler startet NICHT mehr, auch bei niedriger Feuchte
  * 
  * 3. Millis-Overflow (nach 49 Tagen):
@@ -301,7 +301,7 @@
  *                        oder "WiFi: Offline"
  *                        oder "WiFi: Keine Config"
  * 
- * [Y=210] Wasser-Warnung:    "⚠ WASSER LEER!"     (Montserrat 16, rot/gelb)
+ * [Y=210] Wasser-Warnung:    "WASSER LEER!"     (Montserrat 16, rot/gelb)
  *                            (nur bei Wassermangel sichtbar, blinkt 1 Hz)
  * 
  * FARBCODES IST-LUFTFEUCHTE
@@ -329,11 +329,11 @@
  * 
  * DYNAMISCHE ANZEIGEN
  * -------------------
- * "Spray: X min":
+ * "Spray: X Min":
  *   - Zeigt Zeit seit letztem Sprühstoß
  *   - "Spray: ---" → Noch kein Sprühstoß seit Boot
- *   - "Spray: 0 min" → Gerade gesprüht (< 1 min)
- *   - "Spray: 15 min" → Vor 15 Minuten gesprüht
+ *   - "Spray: 0 Min" → Gerade gesprüht (< 1 min)
+ *   - "Spray: 15 Min" → Vor 15 Minuten gesprüht
  *   - Update: Jede Sekunde
  * 
  * Blink-Indikator (grüner Punkt):
@@ -517,7 +517,7 @@
  * - Nach 5 Minuten: Automatisch in NVS gespeichert
  * 
  * Wasser nachfüllen:
- * - Bei Warnung "⚠ WASSER LEER!"
+ * - Bei Warnung "WASSER LEER!"
  * - Behälter auffüllen bis Kontakte bedeckt
  * - Warnung verschwindet automatisch (~10 Sekunden)
  * 
@@ -942,6 +942,7 @@ static bool gui_last_vernebler_on = false;
 static bool gui_lastWaterLow = false;
 static char gui_last_status[64] = "";
 static int gui_last_color_code = -1;
+static unsigned long encoderLastChange = 0;
 
 // ============================================================================
 // DHT22 Sensor
@@ -1181,6 +1182,13 @@ void setup() {
   }
   
   DPRINTLN("\n=== Setup abgeschlossen ===");
+  DPRINTLN("Führe erste Messung durch...");
+  measureDHT22();
+  if (sensorValid) {
+    addToRingspeicher();
+  }
+  lastMeasurement = millis();
+
   DPRINTLN("Encoder: Luftfeuchte einstellen");
   DPRINTLN("Langer Tastendruck: Config-Mode");
 }
@@ -1206,13 +1214,42 @@ void loop() {
   
   lv_task_handler();
   delay(5);
+
+  // Overflow-Schutz (nach 49 Tagen)
+  if (verneblerStartTime > 0 && millis() < verneblerStartTime) {
+    DPRINTLN("millis() Overflow - Vernebler-Timer zurückgesetzt");
+    verneblerStartTime = millis();
+  }
+  if (lastSprayTime > 0 && millis() < lastSprayTime) {
+    DPRINTLN("millis() Overflow - Spray-Timer zurückgesetzt");
+    lastSprayTime = millis();
+  }
   
-  // DHT22 Messung, Wasserstandsmessung
+  // DHT22 Messung, Wasserstandsmessung, ggf. Vernebler anschalten
   if (now - lastMeasurement >= measurementInterval) {
     measureDHT22();
     checkWaterLevel();
+    if (!verneblerOn &&                                    // Läuft nicht bereits
+        sensorValid &&                                     // Sensor funktioniert
+        !waterLevelLow &&                                  // Wasser vorhanden (wichtig!)
+        istFeuchte < (sollFeuchte - hysterese)) {          // Zu trocken
+      verneblerOn = true;
+      verneblerStartTime = now;
+      digitalWrite(RELAY_PIN, HIGH);
+      DPRINTF("Sprühstoß gestartet (Ist: %.1f%%, Soll: %d%%)\n", istFeuchte, sollFeuchte);
+    }
     addToRingspeicher();
     lastMeasurement = now;
+  }
+
+  // nach der Sprühstoßdauer den Vernebler wieder ausschalten
+  if (verneblerOn) {
+    if (now - verneblerStartTime >= (unsigned long)spruehstossDauer * 1000UL) {
+      verneblerOn = false;
+      digitalWrite(RELAY_PIN, LOW);
+      lastSprayTime = now;
+      DPRINTLN("Sprühstoß beendet");
+    }
   }
   
   // Rotary Encoder auslesen
@@ -1229,10 +1266,7 @@ void loop() {
       lv_obj_set_style_text_color(label_soll_feuchte, lv_color_hex(0xFF0000), 0);
       gui_last_soll_feuchte = sollFeuchte;
       lv_refr_now(NULL);
-      
-      // Nach 2 Sekunden Farbe zurücksetzen
-      static unsigned long lastChange = 0;
-      lastChange = millis();
+      encoderLastChange = millis();
     }
   }
   
@@ -1257,43 +1291,7 @@ void loop() {
       }
     }
   }
-  
-  // Overflow-Schutz (nach 49 Tagen)
-  if (verneblerStartTime > 0 && millis() < verneblerStartTime) {
-    DPRINTLN("millis() Overflow - Vernebler-Timer zurückgesetzt");
-    verneblerStartTime = millis();
-  }
-  if (lastSprayTime > 0 && millis() < lastSprayTime) {
-    DPRINTLN("millis() Overflow - Spray-Timer zurückgesetzt");
-    lastSprayTime = millis();
-  }
-  
-  // Vernebler-Steuerung
-  if (verneblerOn) {
-    // Läuft gerade - prüfen ob Dauer abgelaufen
-    if (millis() - verneblerStartTime >= (unsigned long)spruehstossDauer * 1000UL) {
-      verneblerOn = false;
-      digitalWrite(RELAY_PIN, LOW);
-      lastSprayTime = millis();
-      DPRINTLN("Sprühstoß beendet");
-    }
-  } else {
-    // Nicht aktiv - prüfen ob starten nötig, aber nur, wenn Wasser vorhanden!
-    if (sensorValid && !waterLevelLow && istFeuchte < (sollFeuchte - hysterese)) {
-      verneblerOn = true;
-      verneblerStartTime = millis();
-      digitalWrite(RELAY_PIN, HIGH);
-      DPRINTF("Sprühstoß gestartet (Ist: %.1f%%, Soll: %d%%)\n", istFeuchte, sollFeuchte);
-    }
-  }
-  
-  // Sensor-Fehler → Vernebler aus
-  if (verneblerOn && !sensorValid) {
-    verneblerOn = false;
-    digitalWrite(RELAY_PIN, LOW);
-    DPRINTLN("Vernebler wegen Sensor-Fehler ausgeschaltet!");
-  }
-  
+
   // Webserver bedienen
   if (WiFi.status() == WL_CONNECTED) {
     server.handleClient();
@@ -1387,8 +1385,8 @@ void create_gui() {
 
   // Wasser-Warnung
   label_water_warning = lv_label_create(scr);
-  lv_label_set_text(label_water_warning, "⚠ WASSER LEER!");
-  lv_obj_set_pos(label_water_warning, 10, 210);
+  lv_label_set_text(label_water_warning, LV_SYMBOL_CHARGE " WASSER LEER " LV_SYMBOL_CHARGE);
+  lv_obj_set_pos(label_water_warning, 65, 210);
   lv_obj_set_style_text_font(label_water_warning, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(label_water_warning, lv_color_hex(0xFF0000), 0); // Rot
   lv_obj_set_style_bg_color(label_water_warning, lv_color_hex(0xFFFF00), 0); // Gelber Hintergrund
@@ -1402,8 +1400,15 @@ void create_gui() {
 void update_gui() {
   char buf[80];
   unsigned long now = millis();
+
+  if (encoderLastChange > 0 && (now - encoderLastChange >= 2000)) {
+    // 2 Sekunden sind vorbei → Farbe zurück auf schwarz
+    lv_obj_set_style_text_color(label_soll_feuchte, lv_color_hex(0x000000), 0);
+    encoderLastChange = 0;
+    lv_refr_now(NULL);
+  }
   
-  // Temperatur
+  // Temperatur und Luftfeuchte
   static unsigned long last_temp_update = 0;
   if (now - last_temp_update >= 500) {
     last_temp_update = now;
@@ -1473,7 +1478,7 @@ void update_gui() {
       if (spray_minuten < 0) {
         snprintf(buf, sizeof(buf), "Spray: ---");
       } else {
-        snprintf(buf, sizeof(buf), "Spray: %d min", spray_minuten);
+        snprintf(buf, sizeof(buf), "Spray: %d Min", spray_minuten);
       }
       lv_label_set_text(label_letzter_spray, buf);
       gui_last_spray_minuten = spray_minuten;
@@ -1693,12 +1698,6 @@ void checkWaterLevel() {
     if (!waterLevelLow) {
       waterLevelLow = true;
       DPRINTLN("⚠ WARNUNG: Wasserstand niedrig!");
-      
-      // Warnung auf Display anzeigen
-      if (label_water_warning) {
-        lv_obj_clear_flag(label_water_warning, LV_OBJ_FLAG_HIDDEN);
-        lv_refr_now(NULL);
-      }
     }
   } else {
     // Wasser vorhanden
