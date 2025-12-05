@@ -20,11 +20,11 @@
  *      gesenkt werden kann, ist die Sprühstoßdauer vorsichtig anzupassen,
  *      damit durch einen einzelnen Sprühstoß die Feuchte im jeweiligen Raum
  *      nicht deutlich ÜBER den Zielwert gebracht wird.
- * ✓ Wasserstands-Überwachung mit visueller Warnung
+ * ✓ Wasserstands-Überwachung mit Warnung auf dem Display
  * ✓ 14 Tage Datenspeicherung (10.080 Messungen @ 2min Intervall)
  * ✓ Persistente Speicherung in LittleFS (überlebt Neustart)
- * ✓ Web-Interface mit Verlaufs-Chart und CSV-Download
- * ✓ LVGL GUI auf 1.69" TFT-Display mit Live-Anzeigen
+ * ✓ Web-Interface mit Verlaufs-Chart (letzte 24h) und CSV-Download (komplette Daten)
+ * ✓ LVGL GUI auf 1.69" TFT-Display
  * ✓ Rotary Encoder für Ziel-Luftfeuchte (40-90%)
  * ✓ WiFi mit mDNS (erreichbar unter brutschrank.local)
  * ✓ Offline-Betrieb bei WiFi-Ausfall (volle Funktionalität)
@@ -69,7 +69,6 @@
  *   MOSI → GPIO 5
  *   VCC  → 3.3V
  *   GND  → GND
- *   LED  → 3.3V (Hintergrundbeleuchtung)
  * 
  * Rotary Encoder:
  *   CLK  → GPIO 34
@@ -91,7 +90,6 @@
  * 
  * WASSERSTANDS-SENSOR AUFBAU
  * ---------------------------
- * Variante A - Einfache Kontakte (billig):
  * - 2 blanke Kupferdrähte oder Edelstahl-Schrauben
  * - Abstand: ca. 5-10mm
  * - Position: Ca. 1cm über Boden des Wasserbehälters
@@ -121,6 +119,7 @@
  * - ESPmDNS         → Hostname-Auflösung (brutschrank.local)
  * - WebServer       → HTTP Server
  * - Preferences     → NVS Speicher für Konfiguration
+ * - Update          → OTA-Update
  * 
  * HINWEIS: TFT_eSPI User_Setup.h muss manuell angepasst werden!
  * Pin-Belegung siehe oben unter "PIN-BELEGUNG".
@@ -130,13 +129,10 @@
  * 
  * 1. NVS (Non-Volatile Storage) - Konfiguration:
  *    Gespeicherte Daten:
- *    - WiFi SSID
- *    - WiFi Passwort
+ *    - WiFi SSID und Passwort
  *    - Ziel-Luftfeuchte (40-90%)
  *    - Sprühstoß-Dauer (1-60s)
  *    Größe: ~500 Bytes
- *    Schreibzyklen: ~100.000 (Flash-schonend durch Änderungserkennung)
- *    Speicherort: Partition "nvs" (20 KB)
  * 
  * 2. LittleFS (Filesystem) - Messdaten:
  *    Datei: /ringdata.bin
@@ -147,7 +143,7 @@
  *    Größe: 60.483 Bytes
  *    Auto-Save: Alle 30 Minuten
  *    Manuell: Über Web-Interface Button
- *    Speicherort: Partition "spiffs" (1,5 MB, ~4% genutzt)
+ *    Speicherort: Partition "spiffs" (190 KB)
  * 
  * 3. RAM (Heap) - Aktive Daten:
  *    Dynamisch allokiert in setup():
@@ -292,7 +288,7 @@
  * [Y=50]  Ist-Luftfeuchte:   "Ist: 58%"           (Montserrat 18, FARBE)
  *         Soll-Luftfeuchte:  "Ziel: 60%"          (Montserrat 18, rechts)
  * 
- * [Y=80]  Letzter Spray:     "Spray: 3 min"       (Montserrat 16)
+ * [Y=80]  Letzter Spray:     "Spray: 3 Min"       (Montserrat 16)
  *         Blink-Indikator:   [●]                  (10×10px, grün, 1 Hz)
  * 
  * [Y=150] Vernebler-Status:  "Vernebler: aus"     (Montserrat 16)
@@ -377,6 +373,13 @@
  * 
  * VERFÜGBARE SEITEN
  * -----------------
+ * http://brutschrank.local/         → Konfigurationsseite (mDNS)
+ * http://192.168.1.x/               → Konfigurationsseite (IP)
+ * http://brutschrank.local/chart    → Verlaufs-Diagramm (letzte 24h)
+ * http://brutschrank.local/download → CSV-Export (alle 14 Tage)
+ * http://brutschrank.local/save_ring → Manuelles Speichern
+ * http://brutschrank.local/update   → OTA Firmware Update
+ *
  * 1. Startseite (/)
  *    Funktion: Konfiguration
  *    Features:
@@ -387,18 +390,9 @@
  *    - Links zu Chart, Download, Manuelles Speichern
  * 
  * 2. Verlaufs-Chart (/chart)
- *    Funktion: Grafische Darstellung der letzten 14 Tage
- *    Technologie: Chart.js (von CDN geladen)
- *    Datenpunkte: Alle 10.080 Messungen
- *    Kurven:
- *    - Ist-Luftfeuchte: Grün, durchgezogen
- *    - Soll-Luftfeuchte: Rot, gestrichelt
- *    - Temperatur: Blau, rechte Y-Achse
- *    Performance:
- *    - Desktop: ~2-5 Sekunden Ladezeit
- *    - Tablet: ~5-10 Sekunden
- *    - Smartphone: ~10-20 Sekunden (ältere Geräte länger)
- *    Hinweis: Ladebalken wird angezeigt während Daten übertragen werden
+ *    Funktion: Grafische Darstellung der letzten 24 Stunden
+ *    Technologie: natives SVG
+ *    Datenpunkte: jüngsten 720 Messungen (24h)
  * 
  * 3. CSV-Download (/download)
  *    Funktion: Export aller Messdaten als CSV-Datei
@@ -409,41 +403,20 @@
  *    2,22.52,55.5,60
  *    4,22.51,55.8,60
  *    ...
- *    Spalten:
- *    - Zeitpunkt_min: Minuten seit ESP32-Start
- *    - Temperatur_C: Temperatur in °C (2 Dezimalstellen)
- *    - IstFeuchte_%: Gemessene Luftfeuchte (1 Dezimalstelle)
- *    - SollFeuchte_%: Eingestellte Ziel-Feuchte (Ganzzahl)
- *    Dateigröße: ~500 KB (10.080 Zeilen)
- *    Verwendung: Excel, LibreOffice, Python pandas, etc.
- * 
+ *     
  * 4. Manuelles Speichern (/save_ring)
  *    Funktion: Ringspeicher sofort in LittleFS sichern
  *    Verwendung: Vor Hardware-Änderungen oder Updates
  *    Bestätigung: Dialog-Box vor Ausführung
  *    Feedback: Erfolgsmeldung nach Abschluss
  * 
- * 
- * CHART.JS INTEGRATION
- * --------------------
- * Bibliothek: Chart.js v4.x (von cdn.jsdelivr.net geladen)
- * Chart-Typ: Line Chart (Liniendiagramm)
- * Features:
- * - Zoom: Mausrad / Pinch (Touch)
- * - Pan: Drag / Swipe
- * - Tooltip: Hover über Datenpunkte
- * - Legend: Klickbar (Kurven ein/ausblenden)
- * 
- * Achsen:
- * - X-Achse: Zeit in Minuten (0-20160)
- * - Y-Achse links: Luftfeuchte 0-100%
- * - Y-Achse rechts: Temperatur 0-100°C
- * 
- * Performance-Optimierungen:
- * - pointRadius: 0 (keine Punkte zeichnen)
- * - borderWidth: 1 (dünne Linien)
- * - tension: 0.1 (leichte Glättung)
- * - animation: false (für schnelleres Rendern)
+ * 5. OTA-UPDATE
+ *    - Web-basiertes Update-Interface
+ *    - Upload von .bin Dateien
+ *    - Fortschrittsbalken in Echtzeit
+ *    - Automatischer Neustart nach Update
+ *    - Display zeigt Update-Fortschritt
+ *    - Partition: OTA (1.9MB APP / 190KB SPIFFS)
  * 
  * ============================================================================
  * BEDIENUNGSANLEITUNG
@@ -823,7 +796,6 @@
  * - DHT sensor library (MIT License)
  * - AiEsp32RotaryEncoder (MIT License)
  * - ESP32 Arduino Core (LGPL 2.1)
- * - Chart.js (MIT License, CDN)
  * 
  * Dank an alle Entwickler dieser großartigen Bibliotheken!
  * 
@@ -850,11 +822,9 @@
  * CHANGELOG - VERSIONSHISTORIE
  * ============================================================================
  * 
- * v1.0.0 - 2025-12-02 - Erste vollständige Version
+ * v1.0.0 - 2025-12-05 - Erste vollständige Version
  *   Bekannte Einschränkungen v1.0.0:
- *   - Chart mit 10.080 Punkten kann auf alten Geräten langsam sein
  *   - Keine E-Mail-Benachrichtigung
- *   - Keine OTA-Update-Funktion
  *   - Kein MQTT Support
  */
 
