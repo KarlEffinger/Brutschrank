@@ -1020,6 +1020,81 @@ Preferences preferences;
 String wifi_ssid = "";
 String wifi_password = "";
 
+
+// ============================================================================
+// Gemeinsame CSS-Styles für alle Web-Seiten
+// ============================================================================
+const char CSS_COMMON[] PROGMEM = R"(
+  <style>
+  body{
+    font-family:Arial,sans-serif;
+    margin:0;
+    padding:20px;
+    background:#f0f0f0;
+    font-size:16px;
+  }
+  .container{
+    max-width:600px;
+    margin:0 auto;
+    background:#fff;
+    padding:30px;
+    border-radius:10px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.1);
+  }
+  h1{
+    color:#333;
+    font-size:28px;
+    margin:0 0 20px 0;
+    text-align:center;
+  }
+  .message{
+    font-size:20px;
+    line-height:1.6;
+    margin:20px 0;
+    text-align:center;
+  }
+  .success{
+    color:#28a745;
+    background:#d4edda;
+    padding:20px;
+    border-radius:5px;
+    border-left:4px solid #28a745;
+  }
+  .info{
+    color:#0056b3;
+    background:#d1ecf1;
+    padding:20px;
+    border-radius:5px;
+    border-left:4px solid #0056b3;
+  }
+  button,a.button{
+    display:inline-block;
+    width:100%;
+    padding:15px;
+    margin-top:20px;
+    background:#007bff;
+    color:#fff;
+    border:none;
+    border-radius:5px;
+    font-size:18px;
+    text-decoration:none;
+    text-align:center;
+    cursor:pointer;
+    box-sizing:border-box;
+  }
+  button:hover,a.button:hover{
+    background:#0056b3;
+  }
+  @media (max-width:600px){
+    body{padding:10px;font-size:18px;}
+    .container{padding:20px;}
+    h1{font-size:24px;}
+    .message{font-size:18px;}
+    button,a.button{font-size:20px;padding:18px;}
+  }
+  </style>
+)";
+
 // ============================================================================
 // Funktions-Deklarationen
 // ============================================================================
@@ -1892,7 +1967,10 @@ void handleSave() {
   if (server.hasArg("wifi_ssid")) wifi_ssid = server.arg("wifi_ssid");
   if (server.hasArg("wifi_pass")) wifi_password = server.arg("wifi_pass");
   if (server.hasArg("spray_dauer")) spruehstossDauer = server.arg("spray_dauer").toInt();
-  if (server.hasArg("start_soll")) sollFeuchte = server.arg("start_soll").toInt();
+  if (server.hasArg("start_soll")) {
+    sollFeuchte = server.arg("start_soll").toInt();
+    rotaryEncoder.setEncoderValue(sollFeuchte);
+  }
   
   preferences.begin("luftbefeuchter", false);
   preferences.putString("wifi_ssid", wifi_ssid);
@@ -1901,12 +1979,22 @@ void handleSave() {
   preferences.putInt("soll_feuchte", sollFeuchte);
   preferences.end();
   
-  String html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
-  html += F("<style>body{font-family:Arial;text-align:center;margin:50px;}");
-  html += F(".s{background:#fff;padding:40px;border-radius:10px;}</style>");
-  html += F("</head><body><div class='s'>");
-  html += F("<h1>✓ Gespeichert!</h1><p>Neustart...</p>");
-  html += F("</div></body></html>");
+  String html = F("<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Gespeichert</title>");
+  html += FPSTR(CSS_COMMON);
+  html += F("</head><body><div class='container'>"
+    "<h1>✓ Gespeichert</h1>"
+    "<div class='message success'>"
+    "<p><strong>Einstellungen wurden gespeichert!</strong></p>"
+    "<p>Das Gerät startet jetzt neu.</p>"
+    "<p>Bitte warten Sie 10 Sekunden...</p>"
+    "</div>"
+    "<a href='/' class='button'>← Zurück zur Startseite</a>"
+    "</div>"
+    "<script>setTimeout(function(){location.href='/';},10000);</script>"  // ← Auto-Redirect nach 10s
+    "</body></html>");
   
   server.send(200, F("text/html"), html);
   
@@ -1919,131 +2007,178 @@ void handleSave() {
 // Webserver: Chart zeichnen (nutzt cdn.jsdelivr.net/npm/chart.js )
 // ============================================================================
 void handleChart() {
+  // ============ NUR die letzten 720 Punkte (24 Stunden) ============
+  int totalCount = ringFull ? RING_SIZE : ringIndex;
+  int displayCount = min(720, totalCount);  // Max 720 Punkte
+  
+  // Start-Index: Die letzten 720 Punkte
+  int startIdx;
+  if (ringFull) {
+    // Ring ist voll: Die letzten 720 vor ringIndex
+    startIdx = (ringIndex - displayCount + RING_SIZE) % RING_SIZE;
+  } else {
+    // Ring nicht voll: Von Anfang an
+    startIdx = 0;
+  }
+  
+  // HTML Header
   String html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-    "<title>Luftfeuchte-Verlauf</title>"
-    "<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>"
-    "<script>"
-    "window.chartLoaded=false;"
-    "window.addEventListener('load',function(){"
-    "setTimeout(function(){"
-    "if(typeof Chart==='undefined'){"
-    "document.getElementById('loading').innerHTML="
-    "'❌ <b>Chart.js konnte nicht geladen werden!</b><br><br>'+"
-    "'<div style=\"text-align:left;max-width:400px;margin:0 auto;\">'+"
-    "'<b>Mögliche Ursachen:</b><ul>'+"
-    "'<li>Kein Internet-Zugang</li>'+"
-    "'<li>CDN (cdn.jsdelivr.net) nicht erreichbar</li>'+"
-    "'<li>Firewall blockiert externe Scripts</li>'+"
-    "'</ul>'+"
-    "'<b>Alternative:</b><br>'+"
-    "'Nutzen Sie den CSV-Download und öffnen Sie die Daten in Excel/LibreOffice.</div>';"
-    "document.getElementById('chart').style.display='none';"
-    "var btn=document.createElement('button');"
-    "btn.textContent='💾 CSV herunterladen';"
-    "btn.style.cssText='padding:10px 20px;margin:20px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:16px';"
-    "btn.onclick=function(){location.href='/download';};"
-    "document.getElementById('loading').appendChild(btn);"
-    "}else{"
-    "window.chartLoaded=true;"
-    "initChart();"
-    "}"
-    "},500);"
-    "});"
-    "</script>"
+    "<title>Verlauf 24h</title>"
     "<style>"
-    "body{font-family:Arial;margin:20px;background:#f0f0f0;}"
-    ".c{max-width:1200px;margin:0 auto;background:#fff;padding:20px;border-radius:10px;}"
-    ".info{background:#fff3cd;padding:10px;margin:10px 0;border-radius:5px;border-left:4px solid #ffc107;}"
-    "button{padding:10px 20px;margin:5px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;}"
+    "body{margin:0;padding:10px;font-family:Arial;background:#f0f0f0;}"
+    ".container{max-width:900px;margin:0 auto;background:#fff;padding:15px;border-radius:8px;}"
+    "h1{margin:0 0 10px 0;font-size:20px;text-align:center;}"
+    ".legend{display:flex;justify-content:center;flex-wrap:wrap;margin:10px 0;font-size:14px;}"
+    ".legend div{margin:0 10px;display:flex;align-items:center;}"
+    ".legend span{display:inline-block;width:30px;height:3px;margin-right:5px;}"
+    "svg{width:100%;height:auto;border:1px solid #ddd;background:#fff;}"
+    "button{width:100%;padding:12px;margin-top:10px;background:#007bff;color:#fff;"
+    "border:none;border-radius:4px;font-size:16px;cursor:pointer;}"
     "button:hover{background:#0056b3;}"
-    "#loading{text-align:center;padding:20px;font-size:18px;}"
-    "</style></head><body><div class='c'>"
-    "<h1>📊 Luftfeuchte-Verlauf (14 Tage)</h1>"
-    "<div class='info'>⚠️ <b>Hinweis:</b> Chart enthält 10.080 Datenpunkte. "
-    "Das Laden kann auf Mobilgeräten einige Sekunden dauern.</div>"
-    "<div id='loading'>⏳ Lade Daten...</div>"
-    "<canvas id='chart' style='display:none;'></canvas>"
-    "<br><button onclick=\"location.href='/'\">← Zurück</button>"
-    "<script>"
-    "function initChart(){"
-    "const labels=[");
+    ".info{background:#e7f3ff;padding:10px;margin:10px 0;border-radius:4px;font-size:13px;text-align:center;}"
+    "</style></head><body><div class='container'>"
+    "<h1>📊 Luftfeuchte-Verlauf (letzte 24 Stunden)</h1>"
+    "<div class='legend'>"
+    "<div><span style='background:#0066ff'></span>Ist-Feuchte</div>"
+    "<div><span style='background:#00cc00'></span>Soll-Feuchte</div>"
+    "<div><span style='background:#ff6600'></span>Temperatur</div>"
+    "</div>"
+    "<div class='info'>📍 Zeigt ");
+  html += String(displayCount);
+  html += F(" Messpunkte (");
   
-  // Daten vorbereiten
-  int count = ringFull ? RING_SIZE : ringIndex;
-  int start = ringFull ? ringIndex : 0;
+  // Zeit berechnen
+  int hours = (displayCount * 2) / 60;
+  int minutes = (displayCount * 2) % 60;
+  if (hours > 0) {
+    html += String(hours) + "h ";
+  }
+  if (minutes > 0 || hours == 0) {
+    html += String(minutes) + "min";
+  }
+  html += F(")</div>");
   
-  // Labels
-  for(int i = 0; i < count; i++) {
-    int idx = (start + i) % RING_SIZE;
-    if (i > 0) html += ",";
-    html += String(ringspeicher[idx].timestamp);
+  // ============ SVG Chart ============
+  html += F("<svg viewBox='0 0 800 400' preserveAspectRatio='xMidYMid meet'>");
+  
+  // Hintergrund-Gitter (horizontal)
+  html += F("<defs><pattern id='grid' width='80' height='40' patternUnits='userSpaceOnUse'>"
+    "<path d='M 0 40 L 800 40' stroke='#e0e0e0' stroke-width='0.5'/>"
+    "</pattern></defs>"
+    "<rect width='800' height='400' fill='url(#grid)'/>");
+  
+  // Achsen
+  html += F("<line x1='60' y1='20' x2='60' y2='360' stroke='#333' stroke-width='2'/>"
+    "<line x1='60' y1='360' x2='780' y2='360' stroke='#333' stroke-width='2'/>");
+  
+  // Y-Achse Beschriftung (0-100)
+  for (int i = 0; i <= 10; i++) {
+    int y = 360 - (i * 34);
+    int val = i * 10;
+    html += F("<text x='50' y='");
+    html += String(y + 5);
+    html += F("' text-anchor='end' font-size='12' fill='#666'>");
+    html += String(val);
+    html += F("</text>");
+    html += F("<line x1='55' y1='");
+    html += String(y);
+    html += F("' x2='60' y2='");
+    html += String(y);
+    html += F("' stroke='#333' stroke-width='1'/>");
   }
   
-  html += F("];"
-    "const temp=[");
-  
-  // Temperatur
-  for(int i = 0; i < count; i++) {
-    int idx = (start + i) % RING_SIZE;
-    if (i > 0) html += ",";
-    html += String(decodeTemperatur(ringspeicher[idx].temperatur), 2);
+  // X-Achse Beschriftung (Zeit - relativ)
+  int xLabels = min(8, displayCount / 100);
+  if (xLabels < 2) xLabels = 2;
+  for (int i = 0; i <= xLabels; i++) {
+    int idx = displayCount * i / xLabels;
+    if (idx >= displayCount) idx = displayCount - 1;
+    
+    int dataIdx = (startIdx + idx) % RING_SIZE;
+    int x = 60 + (i * 720 / xLabels);
+    
+    // Relative Zeit: Minuten von Start
+    int relativeMinutes = idx * 2;  // Jeder Punkt = 2 Minuten
+    
+    html += F("<text x='");
+    html += String(x);
+    html += F("' y='380' text-anchor='middle' font-size='11' fill='#666'>");
+    
+    // Formatierung: Stunden:Minuten
+    int h = relativeMinutes / 60;
+    int m = relativeMinutes % 60;
+    if (h > 0) {
+      html += String(h) + "h";
+    }
+    if (m > 0 || h == 0) {
+      if (h > 0) html += " ";
+      html += String(m) + "m";
+    }
+    html += F("</text>");
   }
   
-  html += F("];"
-    "const ist=[");
+  // Achsen-Titel
+  html += F("<text x='25' y='200' text-anchor='middle' font-size='13' font-weight='bold' "
+    "fill='#0066ff' transform='rotate(-90 25 200)'>Luftfeuchte (%) / Temp (°C)</text>");
+  html += F("<text x='420' y='398' text-anchor='middle' font-size='13' font-weight='bold' "
+    "fill='#666'>Zeit (Stunden:Minuten)</text>");
   
-  // Ist-Feuchte
-  for(int i = 0; i < count; i++) {
-    int idx = (start + i) % RING_SIZE;
-    if (i > 0) html += ",";
-    html += String(decodeFeuchte(ringspeicher[idx].istFeuchte), 1);
+  // ============ Daten-Linien zeichnen ============
+  
+  // Soll-Feuchte (grün, gestrichelt)
+  html += F("<polyline fill='none' stroke='#00cc00' stroke-width='2' stroke-dasharray='5,5' points='");
+  for (int i = 0; i < displayCount; i++) {
+    int dataIdx = (startIdx + i) % RING_SIZE;
+    
+    int x = 60 + (i * 720 / max(1, displayCount - 1));
+    int soll = ringspeicher[dataIdx].sollFeuchte;
+    int y = 360 - (soll * 340 / 100);
+    
+    if (i > 0) html += " ";
+    html += String(x) + "," + String(y);
   }
+  html += F("'/>");
   
-  html += F("];"
-    "const soll=[");
-  
-  // Soll-Feuchte
-  for(int i = 0; i < count; i++) {
-    int idx = (start + i) % RING_SIZE;
-    if (i > 0) html += ",";
-    html += String(ringspeicher[idx].sollFeuchte);
+  // Ist-Feuchte (blau)
+  html += F("<polyline fill='none' stroke='#0066ff' stroke-width='2.5' points='");
+  for (int i = 0; i < displayCount; i++) {
+    int dataIdx = (startIdx + i) % RING_SIZE;
+    
+    int x = 60 + (i * 720 / max(1, displayCount - 1));
+    float ist = decodeFeuchte(ringspeicher[dataIdx].istFeuchte);
+    int y = 360 - (int)(ist * 340 / 100);
+    
+    if (i > 0) html += " ";
+    html += String(x) + "," + String(y);
   }
+  html += F("'/>");
   
-  // Chart erstellen
-  html += F("];"
-    "document.getElementById('loading').style.display='none';"
-    "document.getElementById('chart').style.display='block';"
-    "new Chart(document.getElementById('chart'),{"
-    "type:'line',"
-    "data:{"
-    "labels:labels,"
-    "datasets:["
-    "{label:'Ist-Feuchte (%)',data:ist,borderColor:'rgb(0,170,0)',borderWidth:1,pointRadius:0,tension:0.1},"
-    "{label:'Soll-Feuchte (%)',data:soll,borderColor:'rgb(255,0,0)',borderDash:[5,5],borderWidth:1,pointRadius:0,tension:0.1},"
-    "{label:'Temperatur (°C)',data:temp,borderColor:'rgb(0,0,255)',borderWidth:1,pointRadius:0,yAxisID:'y1',tension:0.1}"
-    "]},"
-    "options:{"
-    "responsive:true,"
-    "maintainAspectRatio:false,"
-    "plugins:{"
-    "decimation:{enabled:false},"
-    "legend:{display:true}"
-    "},"
-    "scales:{"
-    "x:{display:true,title:{display:true,text:'Zeit (Minuten)'}},"
-    "y:{beginAtZero:false,title:{display:true,text:'Luftfeuchte (%)'}},"
-    "y1:{position:'right',beginAtZero:false,title:{display:true,text:'Temperatur (°C)'}}"
-    "}"
-    "}"
-    "});"
-    "}"
-    "</script>"
+  // Temperatur (orange)
+  html += F("<polyline fill='none' stroke='#ff6600' stroke-width='2' points='");
+  for (int i = 0; i < displayCount; i++) {
+    int dataIdx = (startIdx + i) % RING_SIZE;
+    
+    int x = 60 + (i * 720 / max(1, displayCount - 1));
+    float temp = decodeTemperatur(ringspeicher[dataIdx].temperatur);
+    int y = 360 - (int)(temp * 340 / 100);
+    
+    if (i > 0) html += " ";
+    html += String(x) + "," + String(y);
+  }
+  html += F("'/>");
+  
+  html += F("</svg>");
+  
+  // Buttons
+  html += F("<button onclick=\"location.href='/'\">← Zurück</button>"
+    "<button onclick=\"location.href='/download'\" style='background:#28a745;margin-top:5px;'>"
+    "💾 CSV Download (alle 14 Tage)</button>"
     "</div></body></html>");
   
   server.send(200, F("text/html"), html);
 }
-
+  
 // ============================================================================
 // Webserver: CSV Download
 // ============================================================================
@@ -2072,14 +2207,20 @@ void handleDownload() {
 void handleSaveRing() {
   saveRingspeicherToLittleFS();
   
-  String html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
-  html += F("<style>body{font-family:Arial;text-align:center;margin:50px;}");
-  html += F(".s{background:#fff;padding:40px;border-radius:10px;}</style>");
-  html += F("</head><body><div class='s'>");
-  html += F("<h1>✓ Gespeichert!</h1>");
-  html += F("<p>Ringspeicher (60 KB) wurde gesichert.</p>");
-  html += F("<button onclick=\"location.href='/'\">← Zurück</button>");
-  html += F("</div></body></html>");
+  String html = F("<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Daten gesichert</title>");
+  html += FPSTR(CSS_COMMON);  // ← CSS einbinden
+  html += F("</head><body><div class='container'>"
+    "<h1>✓ Daten gesichert</h1>"
+    "<div class='message success'>"
+    "<p><strong>Ringspeicher wurde erfolgreich gespeichert!</strong></p>"
+    "<p>Größe: 60 KB (10.080 Messungen)</p>"
+    "<p>Ihre Daten sind jetzt persistent gesichert.</p>"
+    "</div>"
+    "<a href='/' class='button'>← Zurück zur Startseite</a>"
+    "</div></body></html>");
   
   server.send(200, F("text/html"), html);
 }
@@ -2245,11 +2386,38 @@ void handleUpdateDone() {
   server.sendHeader("Connection", "close");
   
   if (Update.hasError()) {
-    server.send(500, F("text/plain"), F("Update FAILED!"));
-  } else {
-    server.send(200, F("text/plain"), F("Update OK! Rebooting..."));
+    String html = F("<!DOCTYPE html><html><head>"
+      "<meta charset='UTF-8'>"
+      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Update Fehler</title>");
+    html += FPSTR(CSS_COMMON);
+    html += F("</head><body><div class='container'>"
+      "<h1>❌ Update fehlgeschlagen</h1>"
+      "<div class='message' style='color:#dc3545;background:#f8d7da;padding:20px;border-radius:5px;border-left:4px solid #dc3545;'>"
+      "<p><strong>Das Update konnte nicht durchgeführt werden.</strong></p>"
+      "<p>Bitte versuchen Sie es erneut.</p>"
+      "</div>"
+      "<a href='/update' class='button'>↻ Nochmal versuchen</a>"
+      "</div></body></html>");
+    server.send(500, F("text/html"), html);
     
-    // 2 Sekunden warten, dann neu starten
+  } else {
+    String html = F("<!DOCTYPE html><html><head>"
+      "<meta charset='UTF-8'>"
+      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Update erfolgreich</title>");
+    html += FPSTR(CSS_COMMON);
+    html += F("</head><body><div class='container'>"
+      "<h1>✓ Update erfolgreich!</h1>"
+      "<div class='message success'>"
+      "<p><strong>Firmware wurde aktualisiert!</strong></p>"
+      "<p>Das Gerät startet jetzt neu...</p>"
+      "<p>Bitte warten Sie 10 Sekunden.</p>"
+      "</div>"
+      "<script>setTimeout(function(){location.href='/';},10000);</script>"
+      "</div></body></html>");
+    server.send(200, F("text/html"), html);
+    
     delay(2000);
     ESP.restart();
   }
