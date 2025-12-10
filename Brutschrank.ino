@@ -878,9 +878,11 @@
 #define AP_PASSWORD "Kristof"
 
 // ============================================================================
-// Display-Konfiguration
+// Display-Konfiguration (TFT_eSPI)
 // ============================================================================
-TFT_eSPI tft = TFT_eSPI();
+// HINWEIS: Pin-Konfiguration muss in User_Setup.h der TFT_eSPI Bibliothek erfolgen!
+// Dort ist aktuell hinterlegt: CS: 21 / RST: 18 / DC: 19 / SCLK: 17 / MOSI bzw. SDA: 5
+  TFT_eSPI tft = TFT_eSPI();
 
 #define LVGL_DISPLAY_WIDTH 280
 #define LVGL_DISPLAY_HEIGHT 240
