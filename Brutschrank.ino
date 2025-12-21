@@ -78,12 +78,12 @@
  *   GND  → GND
  * 
  * Relais (Vernebler):
- *   IN   → GPIO 27
+ *   IN   → GPIO 4
  *   VCC  → 5V (oder 3.3V, je nach Modul)
  *   GND  → GND
  * 
  * Wasserstands-Sensor:
- *   Kontakt 1 → GPIO 25
+ *   Kontakt 1 → GPIO 27
  *   Kontakt 2 → GND
  *   Funktion: Wasser schließt Kontakt zwischen GPIO 25 und GND
  *   Hinweis: INPUT_PULLUP aktiv, daher LOW = Wasser vorhanden
@@ -867,8 +867,8 @@
 // ============================================================================
 #define DHT_PIN 26                   // GPIO für DHT22
 #define DHT_TYPE DHT22               // DHT22 Sensor-Typ
-#define RELAY_PIN 27                 // GPIO für Relais
-#define WATER_SENSOR_PIN 25          // Wasserstands-Sensor: Diesen Pin und einen GND-Anschluss als Kontaktflächen unten in den Wasservorratsbehälter einbringen.
+#define RELAY_PIN 4                 // GPIO für Relais
+#define WATER_SENSOR_PIN 27          // Wasserstands-Sensor: Diesen Pin und einen GND-Anschluss als Kontaktflächen unten in den Wasservorratsbehälter einbringen.
 #define ROTARY_ENCODER_A_PIN 34      // CLK
 #define ROTARY_ENCODER_B_PIN 35      // DT
 #define ROTARY_ENCODER_BUTTON_PIN 32 // SW (ohne Pull-Up!)
@@ -963,6 +963,9 @@ bool verneblerOn = false;
 unsigned long verneblerStartTime = 0;
 unsigned long lastSprayTime = 0;     // Zeitpunkt letzter Sprühstoß
 bool waterLevelLow = false;
+uint16_t touchThreshold = 70;        // Tests haben für mein Setting ergeben: Wert in Wasser: 1, Wert trocken: ~104-105
+const unsigned long waterCheckInterval = 5 * 1000UL;        // 5 Sekunden
+unsigned long lastWaterCheck = 0;
 
 // ============================================================================
 // Ringspeicher (120 Messungen = 2 Stunden)
@@ -1270,6 +1273,11 @@ void loop() {
   if (lastSprayTime > 0 && millis() < lastSprayTime) {
     DPRINTLN("millis() Overflow - Spray-Timer zurückgesetzt");
     lastSprayTime = millis();
+  }
+
+  if (now - lastWaterCheck >= waterCheckInterval) {
+    checkWaterLevel();
+    lastWaterCheck = now;
   }
   
   // DHT22 Messung, Wasserstandsmessung, ggf. Vernebler anschalten
@@ -1736,21 +1744,24 @@ void loadRingspeicherFromLittleFS() {
 // Wasserstand prüfen
 // ============================================================================
 void checkWaterLevel() {
-  // Sensor lesen (LOW = Wasser vorhanden, HIGH = kein Wasser)
-  // Grund: Pull-Up aktiv, Wasser schließt Kontakt nach GND
-  bool sensorState = digitalRead(WATER_SENSOR_PIN);
-  
-  if (sensorState == HIGH) {
+  // Touch-Sensor auslesen (Mittelwert über 5 Messungen)
+  uint32_t sum = 0;
+  for (int i = 0; i < 5; i++) {
+    sum += touchRead(WATER_SENSOR_PIN);
+    delay(2);
+  }
+  uint16_t touchValue = sum / 5;
+  if (touchValue > touchThreshold) {
     // Kein Wasser erkannt
     if (!waterLevelLow) {
       waterLevelLow = true;
-      DPRINTLN("⚠ WARNUNG: Wasserstand niedrig!");
+      DPRINT("Wasserstand niedrig: "); DPRINTLN(touchValue);
     }
   } else {
     // Wasser vorhanden
     if (waterLevelLow) {
       waterLevelLow = false;
-      DPRINTLN("✓ Wasserstand OK");
+      DPRINT("Wasserstand OK: "); DPRINTLN(touchValue);
       
       // Warnung ausblenden
       if (label_water_warning) {
